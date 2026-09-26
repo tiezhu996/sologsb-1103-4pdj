@@ -1,0 +1,12 @@
+# 构建上下文瘦身：依赖与产物在镜像内生成
+node_modules
+frontend/node_modules
+frontend/dist
+dist
+.git
+.gitignore
+.env
+*.log
+.DS_Store
+.idea
+.vscode
