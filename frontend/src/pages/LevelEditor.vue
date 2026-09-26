@@ -12,7 +12,7 @@ import { useLevelStore } from '@/stores/levelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { Fixture, FixturePosition } from '@/types/fixture'
 import { COLOR_TEMP_MAX, COLOR_TEMP_MIN, COLOR_TEMP_STEP } from '@/types/level'
-import { cueTotalSeconds, checkColorTempConsistency, formatSeconds, formatTransition } from '@/utils/fade'
+import { cueTotalSeconds, checkColorTempConsistency, formatDateTime, formatSeconds, formatTransition } from '@/utils/fade'
 import { normalizeCueNo } from '@/utils/cueOrder'
 
 const route = useRoute()
@@ -25,6 +25,8 @@ const sessionStore = useSessionStore()
 
 const cueId = computed(() => String(route.params.id ?? ''))
 const cue = computed(() => cueStore.cueById(cueId.value))
+/** 该 Cue 是否在所属场次的回收站中（电平随 Cue 一并保留，但不允许就地编辑） */
+const inTrash = computed(() => cue.value?.deletedAt !== undefined)
 const sessionId = computed(() => cue.value?.sessionId ?? '')
 const session = computed(() => (sessionId.value ? sessionStore.sessionById(sessionId.value) : null))
 
@@ -34,7 +36,7 @@ const levels = computed(() => levelStore.levelsOfCue(cueId.value))
 const siblingNos = computed(() =>
   cue.value
     ? cueStore
-        .cuesOfSession(sessionId.value)
+        .allCuesOfSession(sessionId.value)
         .map((item) => item.cueNo)
         .filter((no) => no !== cue.value?.cueNo)
     : []
@@ -138,6 +140,20 @@ async function commitCueNo(value: string): Promise<void> {
   message.success(`编号已改为 ${normalized}`)
 }
 
+async function restoreFromTrash(): Promise<void> {
+  if (!cue.value) return
+  const result = await cueStore.restoreCue(cue.value.id)
+  if (!result.ok) {
+    if (result.reason === 'cue-no-taken') {
+      message.error(`时间轴上已存在 ${cue.value.cueNo}，请先处理同号 Cue`)
+    } else {
+      message.error('恢复失败')
+    }
+    return
+  }
+  message.success(`${cue.value.cueNo} 已恢复，通道电平照旧保留`)
+}
+
 const siblingCues = computed(() => (sessionId.value ? cueStore.sortedCuesOfSession(sessionId.value) : []))
 
 function goSiblingCue(direction: -1 | 1): void {
@@ -182,7 +198,18 @@ function goSheets(): void {
     </header>
 
     <NAlert v-if="!cue" type="warning" :bordered="false">
-      该 Cue 不存在，可能已被删除。请返回 Cue 编排时间轴重新选择。
+      该 Cue 不存在，可能已被彻底删除。请返回 Cue 编排时间轴重新选择。
+    </NAlert>
+
+    <NAlert v-else-if="inTrash" type="warning" :bordered="false" class="trash-alert">
+      <template #header>{{ cue.cueNo }} 已退回本场回收站</template>
+      <div class="trash-alert__body">
+        <span>退回时间：{{ formatDateTime(cue.deletedAt as number) }}。通道电平仍原样保留，但回收站中的 Cue 不可编辑。</span>
+        <div class="trash-alert__actions">
+          <NButton size="small" type="primary" ghost @click="restoreFromTrash">恢复到时间轴</NButton>
+          <NButton size="small" @click="goTimeline">返回时间轴</NButton>
+        </div>
+      </div>
     </NAlert>
 
     <template v-else>
@@ -339,6 +366,19 @@ function goSheets(): void {
 </template>
 
 <style scoped>
+.trash-alert__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.trash-alert__actions {
+  display: flex;
+  gap: 8px;
+}
+
 .cue-head {
   display: flex;
   align-items: center;

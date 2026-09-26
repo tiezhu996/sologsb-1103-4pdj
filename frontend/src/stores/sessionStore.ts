@@ -6,7 +6,6 @@ import { createId } from '@/utils/id'
 import { sumCues } from '@/utils/fade'
 import { useCueStore } from '@/stores/cueStore'
 import { useFixtureStore } from '@/stores/fixtureStore'
-import { useLevelStore } from '@/stores/levelStore'
 import { useSheetStore } from '@/stores/sheetStore'
 
 /** 场次统计：Cue 数量 / 过渡总时长 / 灯位通道数量 */
@@ -91,19 +90,17 @@ export const useSessionStore = defineStore('session', () => {
     return next
   }
 
-  /** 删除场次并级联清理灯位通道、Cue（含电平）与排演表 */
+  /** 删除场次：级联清理灯位通道、Cue（含回收站及其通道电平）与排演表 */
   async function removeSession(id: string): Promise<void> {
     const target = sessionById(id)
     if (!target) return
     const cueStore = useCueStore()
     const fixtureStore = useFixtureStore()
-    const levelStore = useLevelStore()
     const sheetStore = useSheetStore()
 
-    const cueIds = cueStore.cuesOfSession(id).map((cue) => cue.id)
     await db.sessions.delete(id)
     sessions.value = sessions.value.filter((session) => session.id !== id)
-    await levelStore.removeByCues(cueIds)
+    // 时间轴与回收站中的 Cue、连同其通道电平一并清干净
     await cueStore.removeBySession(id)
     await fixtureStore.removeBySession(id)
     await sheetStore.removeBySession(id)

@@ -26,6 +26,12 @@ export interface Cue {
   orderIndex: number
   createdAt: number
   updatedAt: number
+  /**
+   * 退回场次回收站的时间戳（毫秒）；undefined 表示在时间轴上的正常 Cue。
+   * 回收站中的 Cue 不参与时间轴与排演表勾选，但其编号、位次（orderIndex）
+   * 与通道电平都原样保留，直到被恢复或随整场回收站一起清空。
+   */
+  deletedAt?: number
 }
 
 /** 新建 Cue 时提交的字段集合 */

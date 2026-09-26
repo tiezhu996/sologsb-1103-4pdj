@@ -4,12 +4,14 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   NAlert,
   NButton,
+  NEmpty,
   NForm,
   NFormItem,
   NInput,
   NInputNumber,
   NModal,
   NSelect,
+  NTag,
   useDialog,
   useMessage
 } from 'naive-ui'
@@ -23,7 +25,7 @@ import { useLevelStore } from '@/stores/levelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { CUE_TRIGGERS, type Cue, type CueTrigger } from '@/types/cue'
 import type { FixturePosition } from '@/types/fixture'
-import { cueTotalSeconds, formatSeconds, formatTransition } from '@/utils/fade'
+import { cueTotalSeconds, formatDateTime, formatSeconds, formatTransition } from '@/utils/fade'
 import { isValidCueNo, normalizeCueNo } from '@/utils/cueOrder'
 
 const route = useRoute()
@@ -48,7 +50,6 @@ const scopeOptions = [
 ]
 
 const fixtures = computed(() => fixtureStore.sortedFixturesOfSession(sessionId.value))
-const cueNoList = computed(() => cues.value.map((cue) => cue.cueNo))
 const totalDuration = computed(() => summary.value.totalSec)
 
 /** 通道芯片的展示数据 */
@@ -96,8 +97,11 @@ const createForm = reactive<{
 })
 
 const createError = computed(() => {
-  if (!isValidCueNo(createForm.cueNo)) return '编号需形如 Q12 或 Q12.5'
-  if (cueStore.isCueNoTaken(sessionId.value, normalizeCueNo(createForm.cueNo))) return '该编号在本场次已存在'
+  const normalized = normalizeCueNo(createForm.cueNo)
+  if (!isValidCueNo(normalized)) return '编号需形如 Q12 或 Q12.5'
+  const trashed = cueStore.trashedCueWithNo(sessionId.value, normalized)
+  if (trashed) return `${normalized} 的 Cue 在回收站里保留着，请先恢复或清空后再插入同号 Cue`
+  if (cueStore.isCueNoTaken(sessionId.value, normalized)) return '该编号在本场次已存在'
   return null
 })
 
@@ -211,6 +215,11 @@ async function commitTrigger(cue: Cue, value: string | number | Array<string | n
 async function commitCueNo(cue: Cue, value: string): Promise<void> {
   const normalized = normalizeCueNo(value)
   if (normalized === cue.cueNo) return
+  const trashed = cueStore.trashedCueWithNo(sessionId.value, normalized)
+  if (trashed) {
+    message.error(`${normalized} 被回收站中的 Cue 占用，请先恢复或清空回收站`)
+    return
+  }
   if (cueStore.isCueNoTaken(sessionId.value, normalized, cue.id)) {
     message.error(`${normalized} 已被占用`)
     return
@@ -220,7 +229,8 @@ async function commitCueNo(cue: Cue, value: string): Promise<void> {
 }
 
 function existingNosOf(cue: Cue): string[] {
-  return cueNoList.value.filter((no) => no !== cue.cueNo)
+  // 行内重号校验需把回收站保留的编号也算占用
+  return cueStore.allCuesOfSession(sessionId.value).map((item) => item.cueNo).filter((no) => no !== cue.cueNo)
 }
 
 /* ---------------- 行内动作 ---------------- */
@@ -241,13 +251,57 @@ async function copyPrevious(cue: Cue): Promise<void> {
 function confirmRemove(cue: Cue): void {
   const levelCount = levelStore.levelsOfCue(cue.id).length
   dialog.warning({
-    title: '删除 Cue',
-    content: `将删除 ${cue.cueNo}${levelCount > 0 ? ` 及其 ${levelCount} 条通道电平` : ''}。`,
-    positiveText: '确认删除',
+    title: '退回回收站',
+    content: `将把 ${cue.cueNo} 退回本场回收站${levelCount > 0 ? `，其 ${levelCount} 条通道电平一并保留` : ''}；编号 ${cue.cueNo} 会继续占位，同号新 Cue 将无法插入。`,
+    positiveText: '退回回收站',
     negativeText: '取消',
     onPositiveClick: async () => {
-      await cueStore.removeCue(cue.id)
-      message.success('Cue 已删除')
+      await cueStore.trashCue(cue.id)
+      message.success(`${cue.cueNo} 已退回回收站`)
+    }
+  })
+}
+
+/* ---------------- 场次回收站 ---------------- */
+const showTrash = ref(false)
+const trashedCues = computed(() => cueStore.trashedOfSession(sessionId.value))
+
+async function restoreCue(cue: Cue): Promise<void> {
+  const result = await cueStore.restoreCue(cue.id)
+  if (!result.ok) {
+    if (result.reason === 'cue-no-taken') {
+      message.error(`时间轴上已存在 ${cue.cueNo}，无法恢复（请先处理同号 Cue）`)
+    } else {
+      message.error('恢复失败，该 Cue 可能已被清空')
+    }
+    return
+  }
+  message.success(`${cue.cueNo} 已恢复到原位次，通道电平照旧保留`)
+}
+
+function confirmDeletePermanent(cue: Cue): void {
+  const levelCount = levelStore.levelsOfCue(cue.id).length
+  dialog.error({
+    title: '彻底删除',
+    content: `将从回收站彻底删除 ${cue.cueNo}${levelCount > 0 ? `，并清掉它的 ${levelCount} 条通道电平` : ''}。此操作不可恢复。`,
+    positiveText: '彻底删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      await cueStore.deleteCuePermanent(cue.id)
+      message.success(`${cue.cueNo} 已彻底删除`)
+    }
+  })
+}
+
+function confirmEmptyTrash(): void {
+  dialog.error({
+    title: '清空本场回收站',
+    content: `将彻底删除回收站中的 ${trashedCues.value.length} 条 Cue，并清掉它们的通道电平，编号占位一并释放。此操作不可恢复。`,
+    positiveText: '清空回收站',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const count = await cueStore.emptyTrash(sessionId.value)
+      message.success(`已清空回收站，彻底删除 ${count} 条 Cue`)
     }
   })
 }
@@ -333,6 +387,9 @@ function channelFilterDuplicate(fixtureId: string): boolean {
       <div class="page__actions">
         <NButton @click="goFixtures">灯位通道</NButton>
         <NButton @click="goSheets">排演表</NButton>
+        <NButton :disabled="!session" @click="showTrash = true">
+          回收站<span v-if="trashedCues.length > 0">（{{ trashedCues.length }}）</span>
+        </NButton>
         <NButton @click="showShift = true">批量偏移过渡</NButton>
         <NButton @click="sortByCueNo">按 Cue 号重排</NButton>
         <NButton type="primary" :disabled="!session" @click="openCreate">插入 Cue</NButton>
@@ -398,7 +455,7 @@ function channelFilterDuplicate(fixtureId: string): boolean {
       </section>
 
       <p v-if="cues.length === 0" class="empty-line">
-        还没有 Cue。点击右上角「插入 Cue」开始编排，编号支持 Q12.5 形式。
+        时间轴上还没有 Cue。点击右上角「插入 Cue」开始编排，编号支持 Q12.5 形式。
       </p>
 
       <div v-else class="cue-list">
@@ -534,7 +591,7 @@ function channelFilterDuplicate(fixtureId: string): boolean {
             <NButton size="tiny" quaternary @click="duplicateCue(cue)">复制为新 Cue</NButton>
             <NButton size="tiny" quaternary :disabled="index === 0" @click="move(cue, -1)">上移</NButton>
             <NButton size="tiny" quaternary :disabled="index === cues.length - 1" @click="move(cue, 1)">下移</NButton>
-            <NButton size="tiny" quaternary type="error" @click="confirmRemove(cue)">删除</NButton>
+            <NButton size="tiny" quaternary type="warning" @click="confirmRemove(cue)">退回回收站</NButton>
           </div>
         </article>
       </div>
@@ -590,6 +647,51 @@ function channelFilterDuplicate(fixtureId: string): boolean {
         <div class="modal-footer">
           <NButton @click="showShift = false">取消</NButton>
           <NButton type="primary" @click="submitShift">应用偏移</NButton>
+        </div>
+      </template>
+    </NModal>
+
+    <NModal v-model:show="showTrash" preset="card" title="本场回收站" class="trash-modal" :mask-closable="false">
+      <p class="trash-tip">
+        回收站里的 Cue 不占时间轴、不参与排演表勾选，但编号继续占位；提示语、过渡时间与通道电平均原样保留，
+        恢复时按原编号放回原来的位次。
+      </p>
+
+      <div v-if="trashedCues.length === 0" class="trash-empty">
+        <NEmpty description="回收站是空的，退回的 Cue 会出现在这里" />
+      </div>
+
+      <div v-else class="trash-list">
+        <article v-for="cue in trashedCues" :key="cue.id" class="trash-row">
+          <div class="trash-row__main">
+            <div class="trash-row__head">
+              <span class="trash-row__no mono">{{ cue.cueNo }}</span>
+              <span class="trash-row__label">{{ cue.label || '（未填写提示语）' }}</span>
+              <NTag size="tiny" :bordered="false">{{ cue.trigger }}</NTag>
+              <NTag size="tiny" :bordered="false" type="warning">
+                电平 {{ levelStore.levelsOfCue(cue.id).length }}
+              </NTag>
+            </div>
+            <p class="trash-row__meta mono">
+              {{ transitionOf(cue) }} · 合计 {{ durationOf(cue) }}
+            </p>
+            <p v-if="cue.note" class="trash-row__note">备注：{{ cue.note }}</p>
+            <p class="trash-row__time mono">退回时间：{{ formatDateTime(cue.deletedAt as number) }}</p>
+          </div>
+          <div class="trash-row__actions">
+            <NButton size="small" type="primary" ghost @click="restoreCue(cue)">恢复</NButton>
+            <NButton size="small" quaternary type="error" @click="confirmDeletePermanent(cue)">彻底删除</NButton>
+          </div>
+        </article>
+      </div>
+
+      <template #footer>
+        <div class="modal-footer">
+          <NButton :disabled="trashedCues.length === 0" quaternary type="error" @click="confirmEmptyTrash">
+            清空回收站（{{ trashedCues.length }}）
+          </NButton>
+          <span class="trash-modal__spacer" />
+          <NButton @click="showTrash = false">关闭</NButton>
         </div>
       </template>
     </NModal>
@@ -809,5 +911,95 @@ function channelFilterDuplicate(fixtureId: string): boolean {
   margin: 0;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.45);
+}
+
+.trash-modal {
+  width: 680px;
+  max-width: 94vw;
+}
+
+.trash-tip {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.trash-empty {
+  padding: 24px 0;
+}
+
+.trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 56vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.trash-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.trash-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trash-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trash-row__no {
+  font-weight: 600;
+  color: #f2b544;
+}
+
+.trash-row__label {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.trash-row__meta {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.trash-row__note {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.trash-row__time {
+  margin: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.trash-row__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+
+.trash-modal__spacer {
+  flex: 1;
 }
 </style>

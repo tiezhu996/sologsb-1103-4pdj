@@ -4,6 +4,7 @@ import type { CueLevel } from '@/types/level'
 import { INTENSITY_MAX, INTENSITY_MIN } from '@/types/level'
 import { db } from '@/utils/db'
 import { createId } from '@/utils/id'
+import { useCueStore } from '@/stores/cueStore'
 
 /** 通道电平补丁 */
 export interface CueLevelPatch {
@@ -41,9 +42,13 @@ export const useLevelStore = defineStore('level', () => {
     return levels.value.find((level) => level.cueId === cueId && level.fixtureId === fixtureId) ?? null
   }
 
-  /** 通道平均亮度，用于灯位配置台展示通道芯片的亮度 */
+  /** 通道平均亮度，用于灯位配置台展示通道芯片的亮度；回收站 Cue 的电平不计入 */
   function averageIntensityOfFixture(fixtureId: string): number | null {
-    const matched = levels.value.filter((level) => level.fixtureId === fixtureId)
+    const cueStore = useCueStore()
+    const activeCueIds = new Set(
+      cueStore.cues.filter((cue) => cue.deletedAt === undefined).map((cue) => cue.id)
+    )
+    const matched = levels.value.filter((level) => level.fixtureId === fixtureId && activeCueIds.has(level.cueId))
     if (matched.length === 0) return null
     const total = matched.reduce((sum, level) => sum + level.intensity, 0)
     return Math.round(total / matched.length)
