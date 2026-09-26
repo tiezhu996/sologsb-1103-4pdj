@@ -22,14 +22,16 @@ export interface Cue {
   holdSec: number
   /** 备注 */
   note: string
-  /** 时间轴落库位次，拖拽调整先后时写回 */
+  /** 时间轴落库位次，拖拽调整先后时写回；进入回收站后冻结为原位次，恢复时按它放回 */
   orderIndex: number
+  /** 进入回收站的时间戳；null 表示在时间轴上。回收站中的 Cue 保留编号与通道电平 */
+  trashedAt: number | null
   createdAt: number
   updatedAt: number
 }
 
 /** 新建 Cue 时提交的字段集合 */
-export type CueDraft = Omit<Cue, 'id' | 'createdAt' | 'updatedAt' | 'orderIndex'> & {
+export type CueDraft = Omit<Cue, 'id' | 'createdAt' | 'updatedAt' | 'orderIndex' | 'trashedAt'> & {
   /** 不传时由 store 按 cueNo 自动定位落库位次 */
   orderIndex?: number
 }

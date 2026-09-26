@@ -34,10 +34,15 @@ const levels = computed(() => levelStore.levelsOfCue(cueId.value))
 const siblingNos = computed(() =>
   cue.value
     ? cueStore
-        .cuesOfSession(sessionId.value)
+        .allCuesOfSession(sessionId.value)
         .map((item) => item.cueNo)
         .filter((no) => no !== cue.value?.cueNo)
     : []
+)
+
+/** 回收站中保留的编号（改名命中时引导去回收站） */
+const trashedNos = computed(() =>
+  sessionId.value ? cueStore.trashedCuesOfSession(sessionId.value).map((item) => item.cueNo) : []
 )
 
 /** 已设定电平的通道（用于色温一致性判定） */
@@ -130,6 +135,10 @@ async function commitCueNo(value: string): Promise<void> {
   if (!cue.value) return
   const normalized = normalizeCueNo(value)
   if (normalized === cue.value.cueNo) return
+  if (cueStore.isCueNoTrashed(sessionId.value, normalized)) {
+    message.error(`${normalized} 在回收站中，请先到回收站恢复或清空`)
+    return
+  }
   if (cueStore.isCueNoTaken(sessionId.value, normalized, cue.value.id)) {
     message.error(`${normalized} 已被占用`)
     return
@@ -188,7 +197,7 @@ function goSheets(): void {
     <template v-else>
       <section class="panel">
         <div class="cue-head">
-          <CueNoInput :model-value="cue.cueNo" :existing-nos="siblingNos" width="130px" @commit="commitCueNo" />
+          <CueNoInput :model-value="cue.cueNo" :existing-nos="siblingNos" :trashed-nos="trashedNos" width="130px" @commit="commitCueNo" />
           <div class="cue-head__titles">
             <p class="cue-head__label">{{ cue.label || '（未填写提示语）' }}</p>
             <p class="cue-head__meta mono">{{ formatTransition(cue) }} · 合计 {{ formatSeconds(cueTotalSeconds(cue)) }}</p>

@@ -91,7 +91,7 @@ export const useSessionStore = defineStore('session', () => {
     return next
   }
 
-  /** 删除场次并级联清理灯位通道、Cue（含电平）与排演表 */
+  /** 删除场次并级联清理灯位通道、Cue（含回收站，连同电平）与排演表 */
   async function removeSession(id: string): Promise<void> {
     const target = sessionById(id)
     if (!target) return
@@ -100,7 +100,7 @@ export const useSessionStore = defineStore('session', () => {
     const levelStore = useLevelStore()
     const sheetStore = useSheetStore()
 
-    const cueIds = cueStore.cuesOfSession(id).map((cue) => cue.id)
+    const cueIds = cueStore.allCuesOfSession(id).map((cue) => cue.id)
     await db.sessions.delete(id)
     sessions.value = sessions.value.filter((session) => session.id !== id)
     await levelStore.removeByCues(cueIds)

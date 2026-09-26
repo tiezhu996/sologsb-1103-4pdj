@@ -1,7 +1,7 @@
 import { computed, toValue, type ComputedRef, type MaybeRefOrGetter } from 'vue'
 import type { Cue, CueOrderSummary } from '@/types/cue'
 import { useCueStore } from '@/stores/cueStore'
-import { sortCues, suggestNextCueNo } from '@/utils/cueOrder'
+import { sortCues } from '@/utils/cueOrder'
 import { sumCues, formatSeconds, cueTotalSeconds } from '@/utils/fade'
 
 /** `useCueOrder` 暴露的顺序视图与重排动作 */
@@ -39,7 +39,8 @@ export function useCueOrder(sessionId: MaybeRefOrGetter<string>): UseCueOrderRet
 
   const totalSeconds = computed(() => summary.value.totalSec)
 
-  const nextCueNo = computed(() => suggestNextCueNo(cues.value.map((cue) => cue.cueNo)))
+  /** 建议编号跳过回收站占用的号，避免默认建议一提交就被拦 */
+  const nextCueNo = computed(() => cueStore.nextCueNo(toValue(sessionId)))
 
   const hardCutCount = computed(() => summary.value.adjacent.filter((item) => item.overlap).length)
 

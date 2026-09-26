@@ -13,6 +13,8 @@ const props = withDefaults(
     modelValue: string
     /** 同场次已占用的编号（需自行排除自身） */
     existingNos?: string[]
+    /** 回收站中保留的编号（命中时提示去回收站恢复或清空） */
+    trashedNos?: string[]
     /** 尺寸 */
     size?: 'tiny' | 'small' | 'medium' | 'large'
     /** 是否禁用 */
@@ -26,6 +28,7 @@ const props = withDefaults(
   }>(),
   {
     existingNos: () => [],
+    trashedNos: () => [],
     size: 'small',
     disabled: false,
     placeholder: 'Q12.5',
@@ -55,9 +58,9 @@ const normalized = computed(() => normalizeCueNo(text.value))
 const errorText = computed<string | null>(() => {
   if (!normalized.value) return '编号不能为空'
   if (!isValidCueNo(normalized.value)) return '编号需形如 Q12 或 Q12.5'
-  if (props.existingNos.includes(normalized.value) && normalized.value !== normalizeCueNo(props.modelValue)) {
-    return '编号已被占用'
-  }
+  if (normalized.value === normalizeCueNo(props.modelValue)) return null
+  if (props.trashedNos.includes(normalized.value)) return '编号在回收站中，请先恢复或清空'
+  if (props.existingNos.includes(normalized.value)) return '编号已被占用'
   return null
 })
 

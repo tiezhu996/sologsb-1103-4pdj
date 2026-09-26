@@ -14,6 +14,8 @@ export type FadeShiftScope = 'in' | 'out' | 'both'
 
 /**
  * Cue 提示点仓库：维护 Cue 时间轴顺序（orderIndex 落库）与排演表勾选导出集合。
+ * 删除的 Cue 进入本场回收站（trashedAt 标记）：不占时间轴与排演表勾选，编号保留、
+ * 通道电平不动；恢复时按原编号放回原位次；清空回收站才级联清掉通道电平。
  */
 export const useCueStore = defineStore('cue', () => {
   const cues = ref<Cue[]>([])
@@ -30,7 +32,20 @@ export const useCueStore = defineStore('cue', () => {
     return grouped
   })
 
+  /** 时间轴上的 Cue（不含回收站） */
   function cuesOfSession(sessionId: string): Cue[] {
+    return (cuesBySession.value[sessionId] ?? []).filter((cue) => cue.trashedAt === null)
+  }
+
+  /** 回收站中的 Cue，按进入时间倒序（最近删除的排在前面） */
+  function trashedCuesOfSession(sessionId: string): Cue[] {
+    return (cuesBySession.value[sessionId] ?? [])
+      .filter((cue) => cue.trashedAt !== null)
+      .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0))
+  }
+
+  /** 时间轴 + 回收站的全部 Cue（编号占用判定与级联清理用） */
+  function allCuesOfSession(sessionId: string): Cue[] {
     return cuesBySession.value[sessionId] ?? []
   }
 
@@ -42,12 +57,19 @@ export const useCueStore = defineStore('cue', () => {
     return cues.value.find((cue) => cue.id === id) ?? null
   }
 
+  /** 建议的下一个编号：回收站占用的编号同样跳过 */
   function nextCueNo(sessionId: string): string {
-    return suggestNextCueNo(cuesOfSession(sessionId).map((cue) => cue.cueNo))
+    return suggestNextCueNo(allCuesOfSession(sessionId).map((cue) => cue.cueNo))
   }
 
+  /** 编号是否被占用：回收站中的编号也算占用，避免恢复回来撞号 */
   function isCueNoTaken(sessionId: string, cueNo: string, exceptCueId?: string): boolean {
-    return cuesOfSession(sessionId).some((cue) => cue.id !== exceptCueId && cue.cueNo === cueNo)
+    return allCuesOfSession(sessionId).some((cue) => cue.id !== exceptCueId && cue.cueNo === cueNo)
+  }
+
+  /** 编号是否正躺在回收站里（占用的一种，提示语引导去恢复或清空） */
+  function isCueNoTrashed(sessionId: string, cueNo: string): boolean {
+    return trashedCuesOfSession(sessionId).some((cue) => cue.cueNo === cueNo)
   }
 
   async function hydrate(): Promise<void> {
@@ -72,6 +94,7 @@ export const useCueStore = defineStore('cue', () => {
       holdSec: draft.holdSec,
       note: draft.note,
       orderIndex: insertIndex + 1,
+      trashedAt: null,
       createdAt: now,
       updatedAt: now
     }
@@ -105,16 +128,60 @@ export const useCueStore = defineStore('cue', () => {
     return next
   }
 
-  /** 删除 Cue 并级联清理其通道电平 */
-  async function removeCue(id: string): Promise<void> {
+  /**
+   * 删除 Cue：移入本场回收站。提示语、过渡时间与通道电平全部保留，
+   * 落库位次冻结为原位次供恢复时放回；回收站中的编号仍被占用。
+   */
+  async function trashCue(id: string): Promise<void> {
     const target = cueById(id)
-    if (!target) return
-    const levelStore = useLevelStore()
-    await db.cues.delete(id)
-    cues.value = cues.value.filter((cue) => cue.id !== id)
+    if (!target || target.trashedAt !== null) return
+    const now = Date.now()
+    const trashed: Cue = { ...target, trashedAt: now, updatedAt: now }
+    await db.cues.put(trashed)
+    cues.value = cues.value.map((cue) => (cue.id === id ? trashed : cue))
     selectedCueIds.value = selectedCueIds.value.filter((cueId) => cueId !== id)
-    await levelStore.removeByCue(id)
+    // 时间轴上剩余的 Cue 重排为连续位次；回收站中的位次保持冻结
     await persistOrder(target.sessionId, sortedCuesOfSession(target.sessionId).map((cue) => cue.id))
+  }
+
+  /** 从回收站恢复：按原编号放回原落库位次（其后 Cue 顺移一位），通道电平照旧保留 */
+  async function restoreCue(id: string): Promise<Cue | null> {
+    const target = cueById(id)
+    if (!target || target.trashedAt === null) return null
+    const siblings = sortedCuesOfSession(target.sessionId)
+    // 冻结的落库位次（1 基）转为 0 基插入位置，超出当前长度时落到末尾
+    const insertIndex = Math.min(Math.max(target.orderIndex - 1, 0), siblings.length)
+    const shifting = siblings.slice(insertIndex)
+    const now = Date.now()
+    const restored: Cue = { ...target, trashedAt: null, orderIndex: insertIndex + 1, updatedAt: now }
+
+    await db.transaction('rw', db.cues, async () => {
+      await db.cues.put(restored)
+      for (const cue of shifting) {
+        await db.cues.put({ ...cue, orderIndex: cue.orderIndex + 1, updatedAt: now })
+      }
+    })
+
+    const shiftedIds = new Set(shifting.map((cue) => cue.id))
+    cues.value = cues.value.map((cue) => {
+      if (cue.id === id) return restored
+      return shiftedIds.has(cue.id) ? { ...cue, orderIndex: cue.orderIndex + 1, updatedAt: now } : cue
+    })
+    return restored
+  }
+
+  /** 清空本场回收站：彻底删除其中的 Cue，并级联清掉它们的通道电平 */
+  async function emptyTrash(sessionId: string): Promise<number> {
+    const trashed = trashedCuesOfSession(sessionId)
+    if (trashed.length === 0) return 0
+    const levelStore = useLevelStore()
+    const ids = trashed.map((cue) => cue.id)
+    await db.cues.bulkDelete(ids)
+    const removed = new Set(ids)
+    cues.value = cues.value.filter((cue) => !removed.has(cue.id))
+    selectedCueIds.value = selectedCueIds.value.filter((cueId) => !removed.has(cueId))
+    await levelStore.removeByCues(ids)
+    return ids.length
   }
 
   /** 复制某条 Cue 的参数为新的一条（紧随其后） */
@@ -123,7 +190,7 @@ export const useCueStore = defineStore('cue', () => {
     if (!source) return null
     const created = await addCue({
       sessionId: source.sessionId,
-      cueNo: suggestNextCueNo(cuesOfSession(source.sessionId).map((cue) => cue.cueNo)),
+      cueNo: suggestNextCueNo(allCuesOfSession(source.sessionId).map((cue) => cue.cueNo)),
       label: `${source.label || 'Cue'}（副本）`,
       trigger: source.trigger,
       fadeInSec: source.fadeInSec,
@@ -216,8 +283,9 @@ export const useCueStore = defineStore('cue', () => {
     await persistOrder(target.sessionId, swapped)
   }
 
+  /** 场次删除时的级联：时间轴与回收站中的 Cue 连同通道电平一道清干净 */
   async function removeBySession(sessionId: string): Promise<void> {
-    const ids = cuesOfSession(sessionId).map((cue) => cue.id)
+    const ids = allCuesOfSession(sessionId).map((cue) => cue.id)
     if (ids.length === 0) return
     const levelStore = useLevelStore()
     await db.cues.bulkDelete(ids)
@@ -260,14 +328,19 @@ export const useCueStore = defineStore('cue', () => {
     hydrated,
     cuesBySession,
     cuesOfSession,
+    trashedCuesOfSession,
+    allCuesOfSession,
     sortedCuesOfSession,
     cueById,
     nextCueNo,
     isCueNoTaken,
+    isCueNoTrashed,
     hydrate,
     addCue,
     updateCue,
-    removeCue,
+    trashCue,
+    restoreCue,
+    emptyTrash,
     duplicateCue,
     copyPreviousParams,
     shiftFades,

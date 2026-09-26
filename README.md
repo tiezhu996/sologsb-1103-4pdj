@@ -40,7 +40,7 @@ docker compose up -d --build    # 改动代码后重新构建
 | --- | --- | --- | --- |
 | `/sessions` | 场次编排 | 新建场次、上下调序、查看每场 Cue 数与过渡总时长、硬切衔接预警 | Session、Cue |
 | `/sessions/:id/fixtures` | 灯位通道配置台 | 通道号排布、按灯位分组折叠、重复通道号高亮、灯位负载校验 | Fixture、Session |
-| `/sessions/:id/cues` | Cue 编排时间轴 | 插入 / 复制 / 删除 Cue、拖拽调整先后、沿袭上一条参数、批量偏移过渡时间 | Cue、CueLevel |
+| `/sessions/:id/cues` | Cue 编排时间轴 | 插入 / 复制 / 删除 Cue、拖拽调整先后、沿袭上一条参数、批量偏移过渡时间、回收站恢复与清空 | Cue、CueLevel |
 | `/cues/:id/levels` | 通道电平编辑 | 逐通道设定亮度与色温、色温漂移检查、一键对齐基准色温 | CueLevel、Fixture |
 | `/sheets` | 排演表生成与导出 | 勾选 Cue 组表、本地留存历史、预览 / 复制 / 下载纯文本 | RehearsalSheet、Cue |
 
@@ -84,7 +84,7 @@ sologsb-1103/
         │   ├── FadeBar.vue      # 渐变条：渐亮/保持/渐暗按比例绘制
         │   ├── ChannelChip.vue  # 通道标签：通道号 + 灯位色块 + 亮度百分比
         │   ├── BlankHint.vue    # 空态引导与新建入口
-        │   └── CueNoInput.vue   # Cue 编号输入与重号校验（支持 Q12.5）
+        │   └── CueNoInput.vue   # Cue 编号输入与重号校验（支持 Q12.5，含回收站占用提示）
         ├── hooks/
         │   ├── useCueOrder.ts        # 按 cueNo 排序、重排落库、相邻过渡汇总
         │   └── useChannelConflict.ts # 重复通道号与灯位过载检测
@@ -105,8 +105,9 @@ sologsb-1103/
 
 - 所有数据存放在**浏览器本地 IndexedDB**，数据库名 `gbcuesheet`，由 `src/utils/db.ts` 用 Dexie 统一封装；页面不直接读写数据库，只调用 store 的 action。
 - 共 6 张表：`sessions`、`fixtures`、`cues`、`levels`、`sheets`、`appMeta`（元数据）。
-- **数据结构版本号**：`DB_VERSION = 2`。`version(1)` 定义初始结构；`version(2)` 新增 `updatedAt` / `sheetNo` 索引、`appMeta` 表，并在 `upgrade()` 中迁移既有数据（补齐 `updatedAt`、`orderIndex`、`holdSec`，规范化遗留排演表编号与条目快照）。
-- 删除场次会级联清理其灯位通道、Cue、通道电平与排演表；删除通道会清理对应的电平记录。
+- **数据结构版本号**：`DB_VERSION = 3`。`version(1)` 定义初始结构；`version(2)` 新增 `updatedAt` / `sheetNo` 索引、`appMeta` 表，并在 `upgrade()` 中迁移既有数据（补齐 `updatedAt`、`orderIndex`、`holdSec`，规范化遗留排演表编号与条目快照）；`version(3)` 为 Cue 补充回收站标记 `trashedAt`（结构不变，仅迁移既有数据补齐字段）。
+- **Cue 回收站**：删除 Cue 只是移入本场回收站（打上 `trashedAt`），不再出现在时间轴与排演表勾选里，但其编号继续被占用——插入或改名为同号时会被拦下，需先到回收站恢复或清空；回收站中提示语、过渡时间与通道电平原样保留，恢复时按原编号放回原落库位次；清空回收站才彻底删除并级联清掉通道电平。
+- 删除场次会级联清理其灯位通道、Cue（含回收站）、通道电平与排演表；删除通道会清理对应的电平记录。
 - **容器无状态**：不使用数据库服务、不挂载命名卷；换浏览器或清理站点数据即等于清空。排演表以生成时刻的快照留档，之后修改 Cue 不影响历史记录。
 
 ## 七、容器化实现要点
